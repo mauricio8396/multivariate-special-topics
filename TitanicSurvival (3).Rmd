@@ -1,0 +1,454 @@
+---
+title: "Titanic Classification Survival"
+author: "Ricky Trujillo"
+date: "2023-03-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(out.width = "50%", out.height="50%", fig.align="center", warning=FALSE, message=FALSE)
+```
+
+```{r}
+library(dplyr)
+library(caret)
+library(tidyr)
+library(ggplot2)
+library(yardstick)
+library(modelr)
+library(gridExtra)
+```
+
+```{r}
+#Reading in the data sheets
+#should probably merge them because one family might be in all the training set and not in the testing set
+setwd("~/Documents/STA 4990/titanic")
+
+
+titanic_train <- read.csv("train.csv")
+titanic_test <- read.csv("test.csv")
+titanic_test$Survived<- 0
+titanic_merge<- rbind(titanic_train, titanic_test)
+```
+
+
+```{r}
+#lots of missing numerical values for Age and Fate
+colSums(is.na(titanic_merge))
+```
+
+```{r}
+#lots of empty entries for string columns in Cabin and Embarked
+colSums(titanic_merge=="")
+```
+Data Cleaning
+```{r}
+# Age (taking the mean and apply it to NA values)
+titanic_merge$Age[is.na(titanic_merge$Age)]<-mean(titanic_merge$Age,na.rm=TRUE)
+sum(is.na(titanic_merge$Age))
+# ----------------------------------------------------------------------------
+# Sex 
+titanic_merge$Sex <- ifelse(titanic_merge$Sex == "male", 1, 0)
+# ----------------------------------------------------------------------------
+# Missing Fare[1044]($8.05) - manually insert
+which(is.na(titanic_merge$Fare)==TRUE)
+titanic_merge$Fare[1044]<-8.05
+sum(is.na(titanic_merge$Fare))
+# ----------------------------------------------------------------------------
+# Embarked(2) (Southhampton)<- S
+#which(titanic_train$Embarked=="")
+titanic_merge$Embarked[62]<-"S"
+titanic_merge$Embarked[830]<-"S"
+titanic_merge$Embarked<-factor(titanic_merge$Embarked)
+which(titanic_merge$Embarked=="")
+# ----------------------------------------------------------------------------
+#Survived (changing to numeric)
+titanic_merge$Survived <- as.factor(titanic_merge$Survived)
+levels(titanic_merge$Survived)
+# ----------------------------------------------------------------------------
+```
+
+
+```{r}
+#Feature Engineering
+# ----------------------------------------------------------------------------
+#Family Size: Sibling/Spouse + Parents/Children + Self
+#Categorize: 1 (Alone), 2-4(Small Family), 5-6 (Medium Family), 7+ (Large Family)
+# factor()
+titanic_merge$fam_size<- titanic_merge$SibSp + titanic_merge$Parch + 1
+titanic_merge <- titanic_merge %>% mutate(fam_size2= case_when(fam_size == 1 ~ 'Alone',
+                                             fam_size >= 2  & fam_size <= 4 ~ 'Small',
+                                             fam_size >= 5  & fam_size <= 6 ~ 'Medium',
+                                             fam_size>= 7  ~ 'Large'))
+titanic_merge$fam_size2<-factor(titanic_merge$fam_size2)
+levels(titanic_merge$fam_size2)
+# ----------------------------------------------------------------------------
+# Splitting their Title to extract just the title? 
+titanic_merge$Title<- gsub('(.*, )|(\\..*)', '', titanic_merge$Name)
+table(titanic_merge$Sex, titanic_merge$Title)
+
+titanic_merge <- titanic_merge%>%
+  mutate(new_Title= case_when(Title %in% c("Mlle","Mme", "Ms", "Miss")~"Miss",
+                              Title %in% c("Lady","the Countess", "Countess", "Mrs", "Dona")~"Mrs",
+                              Title %in% c("Dr", "Major","Capt", "Sir", "Don", "Master", "Mr")~"Mr",
+                              Title %in% c("Jonkheer", "Col","Rev")~"Other"))
+titanic_merge$new_Title<-factor(titanic_merge$new_Title)
+which(is.na(titanic_merge$new_Title))
+
+levels(titanic_merge$new_Title)
+# ----------------------------------------------------------------------------
+#Extracting Ticket Information 
+titanic_merge$Ticket[474] <- "SC/AH/Basle 541"
+
+titanic_merge$TicketNum <- NA
+titanic_merge$TicketStr <- NA
+
+for(i in 1:nrow(titanic_merge)){
+  string <- titanic_merge$Ticket[i]
+  has_space <- grepl(" ", string)
+  
+  if(has_space == FALSE){
+    # if no white space, then the ticket number is the string itself
+    string_num <- as.numeric(string)
+    
+    # there were a couple of cases where there was only a word
+    # no number.  so that needs to be handled here
+    if(is.na(string_num)){
+      # this is the case where it's just a word (no number)
+      titanic_merge$TicketNum[i] <- 0
+      titanic_merge$TicketStr[i] <- string
+    } else{
+      # this is the case where it's just a number (no word)
+      titanic_merge$TicketNum[i] <- string_num 
+      titanic_merge$TicketStr[i] <- "Other"
+    }
+    
+    
+  } else{
+    # if white space, need to split it
+    string_split <- strsplit(string, " ")[[1]]
+    titanic_merge$TicketNum[i] <- string_split[2]
+    titanic_merge$TicketStr[i] <- string_split[1]
+  }
+}
+
+titanic_merge$TicketNum <- as.numeric(titanic_merge$TicketNum)
+titanic_merge$TicketNum[is.na(titanic_merge$TicketNum)] <- 0  # five had no numbers
+
+
+# Some additional fixing
+# A/5
+titanic_merge$TicketStr[titanic_merge$TicketStr == "A./5."] <- "A/5"
+titanic_merge$TicketStr[titanic_merge$TicketStr == "A.5."] <- "A/5"
+titanic_merge$TicketStr[titanic_merge$TicketStr == "A/5."] <- "A/5"
+
+# A/4
+titanic_merge$TicketStr[titanic_merge$TicketStr == "A/4."] <- "A/4"
+titanic_merge$TicketStr[titanic_merge$TicketStr == "A4."] <- "A/4"
+
+# CA
+titanic_merge$TicketStr[titanic_merge$TicketStr == "C.A."] <- "CA"
+titanic_merge$TicketStr[titanic_merge$TicketStr == "CA."] <- "CA"
+
+# WC
+titanic_merge$TicketStr[titanic_merge$TicketStr == "W./C."] <- "W/C"
+
+# SC/Paris
+titanic_merge$TicketStr[titanic_merge$TicketStr == "SC/PARIS"] <- "SC/Paris"
+
+# Turn into factor
+titanic_merge$TicketStr <- as.factor(titanic_merge$TicketStr)
+
+# check what the levels are
+levels(titanic_merge$TicketStr)
+```
+
+```{r}
+set.seed(234951) 
+myvars<- c("Survived", "Pclass", "Sex", "Age", "Fare", "Embarked", "fam_size2", "new_Title", "TicketNum", "TicketStr")
+trainIndex <- createDataPartition(titanic_merge[1:891, "Survived"], p = .70,
+                                  list = FALSE, 
+                                  times = 1)
+
+titanic_merge[1:891, "train"] <- FALSE 
+titanic_merge[1:891, "train"][trainIndex] <- TRUE
+new_titanic_train <- titanic_merge %>% filter(train == TRUE) %>% dplyr::select(myvars)
+new_titanic_test <- titanic_merge %>% filter(train == FALSE) %>% dplyr::select(myvars)
+
+myvars2<- c("PassengerId", "Survived", "Pclass", "Sex", "Age", "Fare", "Embarked", "fam_size2", "new_Title", "TicketNum", "TicketStr")
+titanic_test2<-titanic_merge[892:nrow(titanic_merge), ]%>%dplyr::select(myvars2)
+```
+
+----- Exploratory Analysis -----
+```{r}
+sex.labels<-c('0'="female", '1'="male")
+new_titanic_train%>%
+  mutate(Survived=factor(Survived)) %>%
+  ggplot(aes(x=Pclass, fill=Survived)) +geom_bar() + facet_wrap(~Sex, labeller = labeller(Sex = sex.labels))+ labs(title="Survivors by Class and gender")+theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+
+```{r}
+# Agebins to see relationship of varying age groups
+titanic_train$Age%>%
+  na.omit() %>%
+  max()
+
+#Children(1), Teenagers(2), Young Adults(3), Middle Age Adults(4), Elderly(5)
+new_titanic_train%>% mutate(agegroup = case_when(Age <= 12 ~ '1',
+                                             Age >= 13  & Age <= 19 ~ '2',
+                                             Age >= 20  & Age <= 34 ~ '3',
+                                             Age>=35 & Age<= 54 ~ '4',
+                                             Age>=55 ~'5'))%>%
+  mutate(Survived=factor(Survived)) %>%
+  na.omit()%>%
+  ggplot(aes(x=agegroup, fill=Survived)) +
+  geom_bar()+
+  facet_wrap(~Sex, labeller = labeller(Sex = sex.labels)) + 
+  labs(title="Survivors by Age and gender")+theme(plot.title = element_text(hjust = 0.5), 
+                                                  axis.text.x =element_text(angle=45, 
+                                                                            vjust = 1, 
+                                                                            hjust=1)) + 
+  scale_x_discrete(labels=c("1" = "<13", "2" = "13-19", "3" = "20-34", "4" = "35-54", "5" = "55>"))
+```
+```{r}
+new_titanic_train[1:891, ]%>%
+  mutate(Survived=factor(Survived)) %>%
+  ggplot(aes(x=Age, y=Fare, color=Survived))+geom_point()
+```
+
+```{r}
+#Fares
+new_titanic_train%>%
+  mutate(Survived=factor(Survived))%>%
+  ggplot(aes(x=Fare, y=..density..))+ geom_histogram()+
+  geom_density(aes(x=Fare, color=Survived), size=1.5)
+```
+----- Models-----
+```{r}
+#------------- Stepwise Selection: --------------
+fit_sw <- train(Survived ~ .,
+                data = new_titanic_train,
+                method = "glmStepAIC",
+                family = "binomial", 
+                direction = "both", 
+                trace = FALSE, 
+                trControl = trainControl(method = "none"))
+
+summary(fit_sw)
+```
+
+```{r}
+#------------- Logistic: --------------
+fit_logit_1 <- train(Survived ~ Pclass + Sex + Age + Embarked + fam_size2 +
+                     new_Title + TicketStr, 
+                   data = new_titanic_train, 
+                    method = "glm", 
+                   family = "binomial", 
+                   trControl = trainControl(method = "LOOCV"))
+#------------------------------------------------------------------------------
+fit_logit_2 <- train(Survived ~ Pclass + Sex + Age + Embarked + fam_size2 +
+                     new_Title + TicketStr, 
+                   data = new_titanic_train, 
+                    method = "glm", 
+                   family = "binomial", 
+                   trControl = trainControl(method = "cv", 5))
+```
+
+```{r}
+#------------- Naive Bayes: -------------
+fit_nb_1 <- train(Survived ~ Pclass + Sex + Age + Embarked + fam_size2 +
+                     new_Title + TicketStr, 
+                data = new_titanic_train, 
+                 method = "naive_bayes", 
+                trControl = trainControl(method = "LOOCV"))
+#------------------------------------------------------------------------------
+fit_nb_2 <- train(Survived ~ Pclass + Sex + Age + Embarked + fam_size2 +
+                     new_Title + TicketStr, 
+                data = new_titanic_train, 
+                 method = "naive_bayes",
+                trControl = trainControl(method = "cv", 5))
+```
+
+```{r}
+#------------- KNN: --------------
+fit_knn_1 <- train(Survived ~ Pclass + Sex + Age + Embarked + fam_size2 +
+                     new_Title + TicketStr, 
+                 data = new_titanic_train, 
+                 method = "knn",
+                 tuneGrid = expand.grid(k =1:30),
+                 trControl = trainControl(method = "LOOCV"))
+#------------------------------------------------------------------------------
+
+fit_knn_2 <- train(Survived ~ Pclass + Sex + Age + Embarked + fam_size2 +
+                     new_Title + TicketStr, 
+                 data = new_titanic_train, 
+                 method = "knn",
+                 tuneGrid = expand.grid(k =1:30),
+                 trControl = trainControl(method = "cv", 5))
+
+plot(fit_knn_1)
+plot(fit_knn_2)
+fit_knn_1$bestTune
+```
+----- Metrics -----
+```{r}
+#Adding predictions and probabilities to Training dataframe
+new_titanic_train <- new_titanic_train %>%
+  #Stepwise Selection
+  mutate(fit_sw_yhat = predict(fit_sw, newdata = ., type="raw")) %>%
+  mutate(fit_sw_prob = predict(fit_sw, newdata = ., type="prob")$'1')%>%
+  #Logistic 1
+  mutate(fit_log1_yhat = predict(fit_logit_1, newdata = ., type="raw")) %>%
+  mutate(fit_log1_prob = predict(fit_logit_1, newdata = ., type="prob")$'1')%>%
+  #Logistic 2
+  mutate(fit_log2_yhat = predict(fit_logit_2, newdata = ., type="raw")) %>%
+  mutate(fit_log2_prob = predict(fit_logit_2, newdata = ., type="prob")$'1')%>%
+  #Naive Bayes 1
+  mutate(fit_nb1_yhat = predict(fit_nb_1, newdata = ., type="raw")) %>%
+  mutate(fit_nb1_prob = predict(fit_nb_1, newdata = ., type="prob")$'1')%>%
+  #Naive Bayes 2
+  mutate(fit_nb2_yhat = predict(fit_nb_2, newdata = ., type="raw")) %>%
+  mutate(fit_nb2_prob = predict(fit_nb_2, newdata = ., type="prob")$'1')%>%
+  #KNN 1
+  mutate(fit_knn1_yhat = predict(fit_knn_1, newdata = ., type="raw")) %>%
+  mutate(fit_knn1_prob = predict(fit_knn_1, newdata = ., type="prob")$'1')%>%
+  #KNN 2
+  mutate(fit_knn2_yhat = predict(fit_knn_2, newdata = ., type="raw")) %>%
+  mutate(fit_knn2_prob = predict(fit_knn_2, newdata = ., type="prob")$'1')
+
+#Training Metrics
+new_titanic_train %>%
+  pivot_longer(c(fit_sw_yhat,
+                 fit_log1_yhat,
+                 fit_log2_yhat,
+                 fit_nb1_yhat,
+                 fit_nb2_yhat,
+                 fit_knn1_yhat,
+                 fit_knn2_yhat)) %>%
+  group_by(name) %>% 
+  yardstick::accuracy(Survived, estimate = value)%>%select(name, .estimate) %>% arrange(desc(.estimate))
+```
+
+```{r}
+#Adding predictions to Testing dataframe
+new_titanic_test <- new_titanic_test %>%
+  #Stepwise Selection
+  mutate(fit_sw_yhat = predict(fit_sw, newdata = ., type="raw")) %>%
+  mutate(fit_sw_prob = predict(fit_sw, newdata = ., type="prob")$'1')%>%
+  #Logistic 1
+  mutate(fit_log1_yhat = predict(fit_logit_1, newdata = ., type="raw")) %>%
+  mutate(fit_log1_prob = predict(fit_logit_1, newdata = ., type="prob")$'1')%>%
+  #Logistic 2
+  mutate(fit_log2_yhat = predict(fit_logit_2, newdata = ., type="raw")) %>%
+  mutate(fit_log2_prob = predict(fit_logit_2, newdata = ., type="prob")$'1')%>%
+  #Naive Bayes 1
+  mutate(fit_nb1_yhat = predict(fit_nb_1, newdata = ., type="raw")) %>%
+  mutate(fit_nb1_prob = predict(fit_nb_1, newdata = ., type="prob")$'1')%>%
+  #Naive Bayes 2
+  mutate(fit_nb2_yhat = predict(fit_nb_2, newdata = ., type="raw")) %>%
+  mutate(fit_nb2_prob = predict(fit_nb_2, newdata = ., type="prob")$'1')%>%
+  #KNN 1
+  mutate(fit_knn1_yhat = predict(fit_knn_1, newdata = ., type="raw")) %>%
+  mutate(fit_knn1_prob = predict(fit_knn_1, newdata = ., type="prob")$'1')%>%
+  #KNN 2
+  mutate(fit_knn2_yhat = predict(fit_knn_2, newdata = ., type="raw")) %>%
+  mutate(fit_knn2_prob = predict(fit_knn_2, newdata = ., type="prob")$'1')
+
+#new_titanic_test <- new_titanic_test %>% 
+ # spread_predictions(fit_sw, fit_knn_1, fit_knn_2, fit_logit_1, fit_logit_2, 
+                     #fit_nb_1, fit_nb_2)
+
+
+new_titanic_test %>%
+    pivot_longer(c(fit_sw_yhat,
+                 fit_log1_yhat,
+                 fit_log2_yhat,
+                 fit_nb1_yhat,
+                 fit_nb2_yhat,
+                 fit_knn1_yhat,
+                 fit_knn2_yhat)) %>%
+  group_by(name) %>% 
+  yardstick::accuracy(Survived, estimate = value)%>%select(name, .estimate)%>% arrange(desc(.estimate))
+```
+
+```{r}
+#ROC and AUC curve for best models (Training and Testing)
+# Best Model (Training: Knn with LOOCV and k=4)
+auc1<- new_titanic_train %>%  roc_auc(truth = Survived, estimate = fit_knn1_prob, event_level = "second")
+txt1 = sprintf("AUC: %s",round(auc1$.estimate,4))
+roc1<- new_titanic_train %>%
+    roc_curve(truth = Survived,
+    estimate = fit_knn1_prob,
+    event_level = "second") %>%
+    autoplot()+labs(title="KNN Train")+theme(plot.title = element_text(hjust = 0.5)) + annotate(geom="text", x=0.5, y=0.5, label=txt1, color="red", family = "Times New Roman", fontface=2)
+
+auc2<- new_titanic_test %>%  roc_auc(truth = Survived, estimate = fit_knn1_prob, event_level = "second")
+txt2 = sprintf("AUC: %s",round(auc2$.estimate,4))
+roc2<- new_titanic_test %>%
+    roc_curve(truth = Survived,
+    estimate = fit_knn1_prob,
+    event_level = "second") %>%
+    autoplot()+labs(title="KNN Test")+theme(plot.title = element_text(hjust = 0.5))+ annotate(geom="text", x=0.5, y=0.5, label=txt2, color="red", family = "Times New Roman", fontface=2)
+
+#Best Model (Testing: Stepwise Selection)
+auc3<- new_titanic_train %>%  roc_auc(truth = Survived, estimate = fit_sw_prob, event_level = "second")
+txt3 = sprintf("AUC: %s",round(auc3$.estimate,4))
+roc3<- new_titanic_train %>%
+    roc_curve(truth = Survived,
+    estimate = fit_sw_prob,
+    event_level = "second") %>%
+    autoplot()+labs(title="Stepwise Train")+theme(plot.title = element_text(hjust = 0.5))+ annotate(geom="text", x=0.5, y=0.5, label=txt3, color="red", family = "Times New Roman", fontface=2)
+
+auc4<- new_titanic_test %>%  roc_auc(truth = Survived, estimate = fit_sw_prob, event_level = "second")
+txt4 = sprintf("AUC: %s",round(auc4$.estimate,4))
+roc4<- new_titanic_test %>%
+    roc_curve(truth = Survived,
+    estimate = fit_sw_prob,
+    event_level = "second") %>%
+    autoplot()+labs(title="Stepwise Test")+theme(plot.title = element_text(hjust = 0.5))+ annotate(geom="text", x=0.5, y=0.5, label=txt4, color="red", family = "Times New Roman", fontface=2)
+
+grid.arrange(roc1,roc2,roc3,roc4, nrow=2)
+```
+```{r}
+#Confusion Matrix of the best model 
+conf_mat_best<- new_titanic_test%>% conf_mat(truth = Survived, estimate = fit_sw_yhat)
+value<-c(conf_mat_best$table[1,1],conf_mat_best$table[2,1], conf_mat_best$table[1,2], conf_mat_best$table[2,2] )
+
+FPR<- conf_mat_best$table[2,1]/ (conf_mat_best$table[2,1]+ conf_mat_best$table[1,1])
+TPR<- conf_mat_best$table[2,2]/ (conf_mat_best$table[1,2]+conf_mat_best$table[2,2])
+FNR<- conf_mat_best$table[1,2]/ (conf_mat_best$table[1,2]+conf_mat_best$table[2,2])
+TNR<- conf_mat_best$table[1,1]/ (conf_mat_best$table[1,1]+conf_mat_best$table[2,1])
+cf.names<-c("FPR", "TPR", "FNR","TNR")
+cf.values<- c(FPR,TPR, FNR, TNR)%>%round(4)
+  
+cf1<- conf_mat_best%>% autoplot("heatmap")+
+  geom_tile(aes(fill = value), colour = "white") +
+  geom_text(aes(label = sprintf("%1.0f",value)), vjust = 1, fontface=2) +
+  scale_fill_gradient(low = "white", high = "steelblue")+
+  labs(title="Confusion Matrix")+theme(plot.title = element_text(hjust = 0.5))
+
+tt3 <- ttheme_minimal(
+  core=list(bg_params = list(fill = blues9[1:4], col=NA),
+            fg_params=list(fontface=3)),
+  colhead=list(fg_params=list(col="navyblue", fontface=4L)),
+  rowhead=list(fg_params=list(col="orange", fontface=3L)))
+
+mytheme <- gridExtra::ttheme_minimal(core = list(padding=unit(c(10, 10), "mm"),fontface=2, 
+                                                 bg_params = list(fill= blues9[1:4], col=NA),
+                                                 fg_params=list(fontface=3)), 
+                                     colhead=list(fg_params=list(col="navyblue", fontface=2)))
+
+grid.arrange(cf1, tableGrob(cbind(Metric=cf.names, Value=cf.values), theme=mytheme), ncol=2, widths=c(2,1.5))
+```
+
+```{r}
+titanic_test2<- titanic_test2 %>% 
+  mutate(Survived = predict(fit_sw, newdata = ., type="raw"))
+```
+
+```{r}
+titanic_test2%>%select(c("PassengerId", "Survived"))%>%write.csv(file="submission.csv", row.names = FALSE)
+```
+
