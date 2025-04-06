@@ -1,1 +1,17 @@
 # multivariate-special-topics
+This project entails fitting a training set to various machine learning models used to predict the outcome of each passenger on board the Titanic. The two outcome possible here are "survivor" or "victim". 
+
+The training set was used to build our machine learning models. The training set already provides the outcome for each passenger. The models used were based on “features” like passengers’ gender and class. 
+
+The test set was used to see how well our models performs on unseen data. In other words, the outcome whether the passenger survived is what our models will predict. 
+
+Walkthrough of Markdown File:
+The code begins in line 9 which attaches libraries into the R file. A library is an implementation of various built-in functions that help perform tasks to accomplish the objective of your project.
+
+We then split our data into a training and a test set and store that data into variables. Here, our naming conventions are titanic_train and titanic_test. At any instant that we see "<-" that is variable name. For the Survived column of our test set, we are using "0" as a placeholder, in which it will change to once we predict our values. In line 31, we are row binding (row merging) our train and test sets. Line 37 in our R file is checking how many missing values we have throughout our merged Dataset, in which we found many missing values for the "Age" and "Fate" columns and that alaso holds true for the "Cabin" and the "Embarked" columns. Now, in order for our model to have accurate predictions, we must clean our data and there is no wrong way to achieve this task. For our sake, we are taking the average of all ages and using that average to fill any missing values. The same is accomplished for the "Fare" and "Embarked" variables. For the "Sex" variable, we are coverting it from a Categorical variable to a numerical variable, which will prove for a more robust model. 
+
+In he following section, we are feature engineering variables, which is creating new variables from the existing variables in our dataset. The new variable created is "Fam_size", short for "Family Size", which is as you guessed it, the number of members per family embarked on the ship. However, instead of keeping this variable numerical, we are converting it to a categorical variable, where the "Alone" is just one traveler, "Small" is any family of 2 to 4, "Medium" is 4 to 6 and "Large" is any family of more than 7. In addition, we are reducing the number of titles by converting multiple titles into one. In example, we convert "Mlle", "Mme", "Ms", and "Miss" into just "Miss". In the following section, we extract information from the tickets and continue data cleaning.
+
+Next, we use set.seed() for reproducibility of the model. Now, before approaching modeling, we conduct some exploratory analysis, meaning we use a variety of visualizations tools and numerical analysis to determine trends in our data. We do so, in case our data is imbalanced and needs some scaling to normalize the trends or in order to reclassify our data, such as grouping ages.
+
+Now, it's time for the modeling! In the modeling section we created several models and determine which is the best fit model to predict the Survivors. We used several types of models here: Logistic, Naive Bayes, and KNN. Lastly, in the metrics section we add our predictions and use this column for submission in the Kaggle website for scoring.
